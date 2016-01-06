@@ -11,10 +11,17 @@ static char Enotperm[] = "dchan: operation not permitted";
 static char Eintern[] = "dchan: internal error";
 
 typedef struct Data Data;
+typedef struct Faux Faux;
 
 struct Data {
 	char *val;
 	int valsz;
+};
+
+struct Faux {
+	Channel *chan;
+	Reqqueue *rq;	/* queue for read requests */
+	Reqqueue *wq;	/* queue for write requests */
 };
 
 enum
@@ -22,23 +29,28 @@ enum
 	Xctl = 1,
 };
 
-Channel *chan;
-Reqqueue *rqueue, *wqueue;
 int debug;
 
 void
 syncread(Req *r)
 {
+	Faux *faux;
 	Data *d;
 	ulong offset;
 
 	DBG("fsread: Count = %d\n", r->ifcall.count);
 	DBG("fsread: Offset = %d\n", (int)r->ifcall.offset);
 
-	d = recvp(chan);
+	faux = r->fid->file->aux;
 
-	if(d == nil)
-		sysfatal("recp failed");
+	d = recvp(faux->chan);
+
+	if(d == nil) {
+		/* no publisher delivering data, returns empty file */
+		readstr(r, "");
+		respond(r, nil);
+		return;
+	}
 
 	offset = r->ifcall.offset;
 	r->ifcall.offset = 0;
@@ -59,12 +71,19 @@ syncread(Req *r)
 void
 fsread(Req *r)
 {
-	reqqueuepush(rqueue, r, syncread);
+	Faux *faux =  r->fid->file->aux;
+
+	if(faux == nil)
+		sysfatal("aux is nil");
+
+	reqqueuepush(faux->rq, r, syncread);
 }
 
 void syncwrite(Req *r)
 {
+	Faux *faux;
 	Data *d;
+
 	DBG("fswrite: Count = %d\n", r->ifcall.count);
 	DBG("fswrite: Offset = %d\n", (int)r->ifcall.offset);
 
@@ -73,35 +92,65 @@ void syncwrite(Req *r)
 	if(!d)
 		respond(r, Eintern);
 
+	faux = r->fid->file->aux;
+
 	d->valsz = r->ifcall.count;
 
 	d->val = mallocz(sizeof(char) * (d->valsz + 1), 1);
 	d->val = memcpy(d->val, r->ifcall.data, d->valsz);
 	d->val[d->valsz] = 0;
+
+	r->ofcall.count = d->valsz;	/* 	store valsz now because after sendp return the value 
+									will be freed by syncread */	
 	
-	int err = sendp(chan, d);
+	int err = sendp(faux->chan, d);
+
+	/* now d is an invalid pointer, freed in another coroutine */
 
 	if(err != 1)
 		sysfatal("sendp failed");
 
 	DBG("Send: %d\n", err);
 
-	r->ofcall.count = d->valsz;
-
-	DBG("fswrite: Reporting success write: %s\n", d->val);
+	DBG("fswrite: Reporting success write");
 	respond(r, nil);
 }
 
 void
 fswrite(Req *r)
 {
-	reqqueuepush(wqueue, r, syncwrite);
+	Faux *faux = r->fid->file->aux;
+	reqqueuepush(faux->wq, r, syncwrite);
 }
 
-void 
+void
 fscreate(Req *r)
 {
-	respond(r, Enotperm);
+	File *f;
+	Faux *faux;
+	Channel *chan;
+
+	if(f = createfile(r->fid->file, r->ifcall.name, r->fid->uid, r->ifcall.perm, nil)){
+		DBG("File created\n");
+
+		chan = chancreate(sizeof(void *), 0);
+		faux = mallocz(sizeof *faux, 1);
+
+		if(faux == nil)
+			sysfatal("Failed to allocate memory for faux");
+	
+		faux->rq = reqqueuecreate();
+		faux->wq = reqqueuecreate();
+		faux->chan = chan;
+
+		f->aux = faux;
+		r->fid->file = f;
+		r->ofcall.qid = f->qid;
+		respond(r, nil);
+		return;
+	}
+
+	respond(r, Eintern);
 }
 
 void
@@ -112,12 +161,36 @@ fsopen(Req *r)
 
 void fsfinish(Srv *)
 {
-	chanfree(chan);
+	
+}
+
+void
+fsflush(Req *r)
+{
+	Faux *faux = r->oldreq->fid->file->aux;
+
+	if(faux == nil)
+		respond(r, nil);
+
+	reqqueueflush(faux->rq, r->oldreq);
+	respond(r, nil);
 }
 
 void
 fsdestroyfile(File *f)
 {
+	Faux *faux;
+
+	if(f->aux != nil) {
+		faux = f->aux;
+
+		reqqueuefree(faux->rq);
+		reqqueuefree(faux->wq);
+		chanfree(faux->chan);
+
+		free(faux);
+	}
+	
 	closefile(f);
 }
 
@@ -132,7 +205,8 @@ Srv fs = {
 	.read 	= fsread,
 	.write 	= fswrite,
 	.create	= fscreate,
-	.end = fsfinish,
+	.end 	= fsfinish,
+	.flush 	= fsflush,
 };
 
 void
@@ -141,10 +215,6 @@ threadmain(int argc, char *argv[])
 	char *addr = nil;
 	char *srvname = nil;
 	char *mptp = nil;
-	
-	chan = chancreate(sizeof(void *), 0);
-	rqueue = reqqueuecreate();
-	wqueue = reqqueuecreate();
 
 	Qid q;
 
