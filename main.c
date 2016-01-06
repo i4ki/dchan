@@ -29,18 +29,30 @@ int debug;
 void
 syncread(Req *r)
 {
-	Data d;
+	Data *d;
+	ulong offset;
+
 	DBG("fsread: Count = %d\n", r->ifcall.count);
+	DBG("fsread: Offset = %d\n", (int)r->ifcall.offset);
 
-	int err = recv(chan, &d);
+	d = recvp(chan);
 
-	DBG("Recv: %d\n", err);
-	readbuf(r, d.val, d.valsz);
+	if(d == nil)
+		sysfatal("recp failed");
+
+	offset = r->ifcall.offset;
+	r->ifcall.offset = 0;
+
+	DBG("Recv: %s\n", d->val);
+	readbuf(r, d->val, d->valsz);
+
+	r->ifcall.offset = offset;
+	r->ofcall.offset = offset;
 	
-	free(d.val);
-	free(&d);
+	free(d->val);
+	free(d);
 
-	DBG("fsread: Reporting a success read: (%s):%d\n", r->ofcall.data, r->ofcall.count);
+	DBG("fsread: Reporting a success read: (%s):(count: %d)(offset: %d)\n", r->ofcall.data, r->ofcall.count, (int)r->ofcall.offset);
 	respond(r, nil);
 }
 
@@ -54,15 +66,23 @@ void syncwrite(Req *r)
 {
 	Data *d;
 	DBG("fswrite: Count = %d\n", r->ifcall.count);
+	DBG("fswrite: Offset = %d\n", (int)r->ifcall.offset);
 
 	d = mallocz(sizeof *d, 1);
 
 	if(!d)
 		respond(r, Eintern);
 
-	d->val = strdup(r->ifcall.data);
 	d->valsz = r->ifcall.count;
-	int err = send(chan, d);
+
+	d->val = mallocz(sizeof(char) * (d->valsz + 1), 1);
+	d->val = memcpy(d->val, r->ifcall.data, d->valsz);
+	d->val[d->valsz] = 0;
+	
+	int err = sendp(chan, d);
+
+	if(err != 1)
+		sysfatal("sendp failed");
 
 	DBG("Send: %d\n", err);
 
@@ -90,7 +110,7 @@ fsopen(Req *r)
 	respond(r, nil);
 }
 
-void fsend(Srv *)
+void fsfinish(Srv *)
 {
 	chanfree(chan);
 }
@@ -112,7 +132,7 @@ Srv fs = {
 	.read 	= fsread,
 	.write 	= fswrite,
 	.create	= fscreate,
-	.end = fsend,
+	.end = fsfinish,
 };
 
 void
@@ -122,7 +142,7 @@ threadmain(int argc, char *argv[])
 	char *srvname = nil;
 	char *mptp = nil;
 	
-	chan = chancreate(sizeof(struct Data), 0);
+	chan = chancreate(sizeof(void *), 0);
 	rqueue = reqqueuecreate();
 	wqueue = reqqueuecreate();
 
