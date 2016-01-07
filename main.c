@@ -261,22 +261,24 @@ fsdestroyfile(File *f)
 {
 	Faux *faux;
 
-	if(f->aux != nil) {
-		faux = f->aux;
+	DBG("Closing %s\n", f->name);
 
+	if(faux = f->aux)
+	if(faux->ftype != Xctl)
+	if(faux->ftype != Xstat) {
 		reqqueuefree(faux->rq);
 		reqqueuefree(faux->wq);
 		chanfree(faux->chan);
 
 		free(faux);
 	}
-	
+
 	closefile(f);
 }
 
 void usage(void)
 {
-	fprint(2, "Usage: dchan [-D] [-s srvname] [-m mptp]\n");
+	fprint(2, "Usage: dchan [-D] [-d] [-s srvname] [-m mptp]\n");
 	threadexits("usage");
 }
 
@@ -335,6 +337,8 @@ threadmain(int argc, char *argv[])
 	if(chatty9p) {
 		fprint(2, "fs.nopipe %d srvname %s mptp %s\n", fs.nopipe, srvname, mptp);
 	}
+
+	threadsetname("threadmain");
 
 	if(addr == nil && srvname == nil && mptp == nil) {
 		sysfatal("must specify -a, -s, or -m option");
