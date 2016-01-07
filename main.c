@@ -1,17 +1,20 @@
 #include <u.h>
 #include <libc.h>
+#include <stdio.h>
 #include <fcall.h>
 #include <thread.h>
 #include <9p.h>
 
 #define DBG if(debug) print
 
-static char Enotimpl[] = "dchan: not implemented";
-static char Enotperm[] = "dchan: operation not permitted";
+static char Enotimpl[] 	= "dchan: not implemented";
+static char Enotperm[] 	= "dchan: operation not permitted";
+static char Ewrfail[]	= "dchan: write failed";	
 static char Eintern[] = "dchan: internal error";
 
-typedef struct Data Data;
-typedef struct Faux Faux;
+typedef struct Data Data;	/* user data */
+typedef struct Faux Faux;	/* file aux	 */
+typedef struct Summ Summ;	/* summary / stats */
 
 struct Data {
 	char *val;
@@ -19,14 +22,21 @@ struct Data {
 };
 
 struct Faux {
+	ushort ftype;
 	Channel *chan;
 	Reqqueue *rq;	/* queue for read requests */
 	Reqqueue *wq;	/* queue for write requests */
 };
 
+struct Summ {
+	ulong tx;
+	ulong rx;
+};
+
 enum
 {
-	Xctl = 1,
+	Xctl 	= 1,
+	Xstat	= 2,
 };
 
 int debug;
@@ -38,6 +48,11 @@ syncread(Req *r)
 	Data *d;
 	ulong offset;
 
+	char tname[20 + 20];	/* at max: descr len = 20, file name = 20 */
+	snprintf(tname, 40, "%s in file %s", "readsync", r->fid->file->name);
+
+	threadsetname(tname);
+
 	DBG("fsread: Count = %d\n", r->ifcall.count);
 	DBG("fsread: Offset = %d\n", (int)r->ifcall.offset);
 
@@ -46,9 +61,8 @@ syncread(Req *r)
 	d = recvp(faux->chan);
 
 	if(d == nil) {
-		/* no publisher delivering data, returns empty file */
-		readstr(r, "");
-		respond(r, nil);
+		/* recv failed, client interrupted or disconnected */
+		/* no respond here */
 		return;
 	}
 
@@ -68,6 +82,22 @@ syncread(Req *r)
 	respond(r, nil);
 }
 
+void 
+readctl(Req *r)
+{
+	/* empty file for now */
+	readstr(r, "");
+	respond(r, nil);
+}
+
+void
+readstat(Req *r)
+{
+	/* empty file for now */
+	readstr(r, "");
+	respond(r, nil);
+}
+
 void
 fsread(Req *r)
 {
@@ -75,6 +105,15 @@ fsread(Req *r)
 
 	if(faux == nil)
 		sysfatal("aux is nil");
+
+	switch(faux->ftype) {
+	case Xctl:
+		readctl(r);
+		return;
+	case Xstat:
+		readstat(r);
+		return;
+	}
 
 	reqqueuepush(faux->rq, r, syncread);
 }
@@ -107,19 +146,46 @@ void syncwrite(Req *r)
 
 	/* now d is an invalid pointer, freed in another coroutine */
 
-	if(err != 1)
-		sysfatal("sendp failed");
+	if(err != 1) {
+		DBG("Sendp failed, probably cancelled/interrupted by client\n");
+
+		/* data does not arrived in the other side, we need to release memory here */
+		free(d->val);
+		free(d);
+
+		/* does not respond anything, flush will do the job */
+		return;
+	}
 
 	DBG("Send: %d\n", err);
-
 	DBG("fswrite: Reporting success write");
 	respond(r, nil);
 }
 
 void
+writectl(Req *r)
+{
+	respond(r, Enotimpl);
+}
+
+void
 fswrite(Req *r)
 {
-	Faux *faux = r->fid->file->aux;
+	Faux *faux =  r->fid->file->aux;
+
+	if(faux == nil)
+		sysfatal("aux is nil");
+
+	switch(faux->ftype) {
+	case Xctl:
+		writectl(r);
+		return;
+	case Xstat:
+		/* stat file isnt writable */
+		respond(r, Enotperm);
+		return;
+	}
+
 	reqqueuepush(faux->wq, r, syncwrite);
 }
 
@@ -130,7 +196,11 @@ fscreate(Req *r)
 	Faux *faux;
 	Channel *chan;
 
-	if(f = createfile(r->fid->file, r->ifcall.name, r->fid->uid, r->ifcall.perm, nil)){
+	if(f = createfile(	r->fid->file, 
+						r->ifcall.name, 
+						getuser() /* r->fid->uid */, 
+						0755, 
+						nil)) {
 		DBG("File created\n");
 
 		chan = chancreate(sizeof(void *), 0);
@@ -154,6 +224,13 @@ fscreate(Req *r)
 }
 
 void
+fswstat(Req *r)
+{
+	r->d.mode = r->ifcall.perm;
+	respond(r, nil);
+}
+
+void
 fsopen(Req *r)
 {
 	respond(r, nil);
@@ -167,12 +244,15 @@ void fsfinish(Srv *)
 void
 fsflush(Req *r)
 {
-	Faux *faux = r->oldreq->fid->file->aux;
+	Faux *faux;
+	Req *o;
 
-	if(faux == nil)
-		respond(r, nil);
+	if(o = r->oldreq)
+	if(faux = o->fid->file->aux) {
+		reqqueueflush(faux->rq, o);
+		reqqueueflush(faux->wq, o);
+	}
 
-	reqqueueflush(faux->rq, r->oldreq);
 	respond(r, nil);
 }
 
@@ -205,6 +285,7 @@ Srv fs = {
 	.read 	= fsread,
 	.write 	= fswrite,
 	.create	= fscreate,
+	.wstat 	= fswstat,
 	.end 	= fsfinish,
 	.flush 	= fsflush,
 };
@@ -215,13 +296,18 @@ threadmain(int argc, char *argv[])
 	char *addr = nil;
 	char *srvname = nil;
 	char *mptp = nil;
+	Faux ctaux, staux;
+
+	ctaux.ftype = Xctl;
+	staux.ftype = Xstat;
 
 	Qid q;
 
 	fs.tree = alloctree(nil, nil, DMDIR|0777, fsdestroyfile);
 	q = fs.tree->root->qid;
 
-	createfile(fs.tree->root, "ctl", "ctl", 0666, (void*)Xctl);
+	createfile(fs.tree->root, "ctl", getuser(), 0666, &ctaux);
+	createfile(fs.tree->root, "stats", getuser(), 0666, &staux);
 
 	ARGBEGIN {
 	case 'd':
