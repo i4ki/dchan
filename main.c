@@ -6,11 +6,16 @@
 #include <9p.h>
 
 #define DBG if(debug) print
+#define defperm 		0650
 
 static char Enotimpl[] 	= "dchan: not implemented";
 static char Enotperm[] 	= "dchan: operation not permitted";
 static char Ewrfail[]	= "dchan: write failed";	
-static char Eintern[] = "dchan: internal error";
+static char Eintern[] 	= "dchan: internal error";
+
+int debug;
+
+long ctlatime, ctlmtime, statatime, statmtime;
 
 typedef struct Data Data;	/* user data */
 typedef struct Faux Faux;	/* file aux	 */
@@ -26,6 +31,9 @@ struct Faux {
 	Channel *chan;
 	Reqqueue *rq;	/* queue for read requests */
 	Reqqueue *wq;	/* queue for write requests */
+
+	long atime;		/* last read time */
+	long mtime;		/* last write time */
 };
 
 struct Summ {
@@ -36,10 +44,9 @@ struct Summ {
 enum
 {
 	Xctl 	= 1,
-	Xstat	= 2,
+	Xstat,
+	Xapp,			/* application files */
 };
-
-int debug;
 
 void
 syncread(Req *r)
@@ -77,6 +84,9 @@ syncread(Req *r)
 	
 	free(d->val);
 	free(d);
+
+	/* success read */
+	time(&faux->atime);
 
 	DBG("fsread: Reporting a success read: (%s):(count: %d)(offset: %d)\n", r->ofcall.data, r->ofcall.count, (int)r->ofcall.offset);
 	respond(r, nil);
@@ -129,13 +139,17 @@ void syncwrite(Req *r)
 	d = mallocz(sizeof *d, 1);
 
 	if(!d)
-		respond(r, Eintern);
+		goto Enomem;
 
 	faux = r->fid->file->aux;
 
 	d->valsz = r->ifcall.count;
 
 	d->val = mallocz(sizeof(char) * (d->valsz + 1), 1);
+
+	if(!d->val)
+		goto Enomem;
+
 	d->val = memcpy(d->val, r->ifcall.data, d->valsz);
 	d->val[d->valsz] = 0;
 
@@ -157,9 +171,16 @@ void syncwrite(Req *r)
 		return;
 	}
 
+	/* success write */
+	time(&faux->mtime);
+
 	DBG("Send: %d\n", err);
 	DBG("fswrite: Reporting success write");
 	respond(r, nil);
+	return;
+
+Enomem:
+	respond(r, Eintern);
 }
 
 void
@@ -196,11 +217,9 @@ fscreate(Req *r)
 	Faux *faux;
 	Channel *chan;
 
-	if(f = createfile(	r->fid->file, 
-						r->ifcall.name, 
-						getuser() /* r->fid->uid */, 
-						0755, 
-						nil)) {
+	DBG("Create mode: %o\n", r->ifcall.perm);
+
+	if(f = createfile(r->fid->file, r->ifcall.name, getuser() /* r->fid->uid */, defperm|r->ifcall.perm, nil)) {
 		DBG("File created\n");
 
 		chan = chancreate(sizeof(void *), 0);
@@ -209,6 +228,7 @@ fscreate(Req *r)
 		if(faux == nil)
 			sysfatal("Failed to allocate memory for faux");
 	
+		faux->ftype = Xapp;
 		faux->rq = reqqueuecreate();
 		faux->wq = reqqueuecreate();
 		faux->chan = chan;
@@ -224,9 +244,34 @@ fscreate(Req *r)
 }
 
 void
-fswstat(Req *r)
+fsstat(Req *r)
 {
-	r->d.mode = r->ifcall.perm;
+	Faux *aux;
+
+	DBG("Stating file: %s\n", r->fid->file->name);
+
+	if(aux = r->fid->file->aux)
+	switch(aux->ftype) {
+	case Xctl:
+		r->d.mode = 0655;
+		r->d.length = 4 * 1024;
+		r->d.atime = ctlatime;	/* last read equals to now() */
+		r->d.mtime = ctlmtime;
+		break;
+	case Xstat:
+		r->d.mode = 0444;
+		r->d.length = 4 * 1024;
+		r->d.atime = statatime;
+		r->d.mtime = statmtime;
+		break;
+	case Xapp:
+		r->d.mode = 655;
+		r->d.length = 0;
+		r->d.atime = aux->atime;
+		r->d.mtime = aux->mtime;
+		break;
+	}
+
 	respond(r, nil);
 }
 
@@ -287,7 +332,7 @@ Srv fs = {
 	.read 	= fsread,
 	.write 	= fswrite,
 	.create	= fscreate,
-	.wstat 	= fswstat,
+	.stat 	= fsstat,
 	.end 	= fsfinish,
 	.flush 	= fsflush,
 };
@@ -299,6 +344,7 @@ threadmain(int argc, char *argv[])
 	char *srvname = nil;
 	char *mptp = nil;
 	Faux ctaux, staux;
+	File *cf, *sf;
 
 	ctaux.ftype = Xctl;
 	staux.ftype = Xstat;
@@ -308,8 +354,18 @@ threadmain(int argc, char *argv[])
 	fs.tree = alloctree(nil, nil, DMDIR|0777, fsdestroyfile);
 	q = fs.tree->root->qid;
 
-	createfile(fs.tree->root, "ctl", getuser(), 0666, &ctaux);
-	createfile(fs.tree->root, "stats", getuser(), 0666, &staux);
+	time(&ctlatime);
+	ctlmtime = ctlatime;
+	statatime = ctlatime;
+	statmtime = ctlatime;
+
+	cf = createfile(fs.tree->root, "ctl", getuser(), 0655, &ctaux);
+	sf = createfile(fs.tree->root, "stats", getuser(), 0444, &staux);
+
+	cf->atime = ctlatime;
+	cf->mtime = ctlmtime;
+	sf->atime = statatime;
+	sf->mtime = statmtime;
 
 	ARGBEGIN {
 	case 'd':
