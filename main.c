@@ -13,6 +13,10 @@ static char Enotperm[] 	= "dchan: operation not permitted";
 static char Ewrfail[]	= "dchan: write failed";	
 static char Eintern[] 	= "dchan: internal error";
 static char Ebadspec[]	= "dchan: bad attach specification";
+static char Eexist[] 	= "file already exists";
+static char Enotowner[] = "not owner";
+static char Ebadoff[] 	= "bad file offset or count";
+static char Elocked[] 	= "file locked";
 
 int debug;
 
@@ -47,6 +51,11 @@ enum
 	Xctl 	= 1,
 	Xstat,
 	Xapp,		/* application files */
+};
+
+enum
+{
+	MAXFSIZE	= 64 * 1024,
 };
 
 static void
@@ -152,7 +161,7 @@ void syncwrite(Req *r)
 	Data *d;
 
 	DBG("fswrite: Count = %d\n", r->ifcall.count);
-	DBG("fswrite: Offset = %d\n", (int)r->ifcall.offset);
+	DBG("fswrite: Offsetan = %d\n", (int)r->ifcall.offset);
 
 	d = mallocz(sizeof *d, 1);
 
@@ -237,7 +246,7 @@ fscreate(Req *r)
 
 	DBG("Create mode: %o\n", r->ifcall.perm);
 
-	if(f = createfile(r->fid->file, r->ifcall.name, getuser() /* r->fid->uid */, defperm|r->ifcall.perm, nil)) {
+	if(f = createfile(r->fid->file, r->ifcall.name, r->fid->uid, defperm|r->ifcall.perm, nil)) {
 		DBG("File created\n");
 
 		chan = chancreate(sizeof(void *), 0);
@@ -299,8 +308,131 @@ fsstat(Req *r)
 }
 
 void
+truncfile(File *f, vlong l)
+{
+	/** TODO: free queue */
+	f->length = l;
+}
+
+void
+accessfile(File *f, int a)
+{
+	f->atime = time(0);
+	if(a & AWRITE){
+		f->mtime = f->atime;
+		f->qid.vers++;
+	}
+}
+
+void
+fswstat(Req *r)
+{
+	File *f, *w;
+	char *u;
+
+	f = r->fid->file;
+	u = r->fid->uid;
+
+	/*
+	 * To change length, must have write permission on file.
+	 */
+	if(r->d.length != ~0 && r->d.length != f->length){
+		if(r->d.length > MAXFSIZE){
+			respond(r, Ebadoff);
+			return;
+		}
+	 	if(!hasperm(f, u, AWRITE) || (f->mode & DMDIR) != 0)
+			goto Perm;
+	}
+
+	/*
+	 * To change name, must have write permission in parent.
+	 */
+	if(r->d.name[0] != '\0' && strcmp(r->d.name, f->name) != 0){
+		if((w = f->parent) == nil)
+			goto Perm;
+		incref(w);
+	 	if(!hasperm(w, u, AWRITE)){
+			closefile(w);
+			goto Perm;
+		}
+		if((w = walkfile(w, r->d.name)) != nil){
+			closefile(w);
+			respond(r, Eexist);
+			return;
+		}
+	}
+
+	/*
+	 * To change mode, must be owner or group leader.
+	 * Because of lack of users file, leader=>group itself.
+	 */
+	if(r->d.mode != ~0 && f->mode != r->d.mode){
+		DBG("user = %s\n", u);
+		DBG("file user = %s\n", f->uid);
+		DBG("file group = %s\n", f->gid);
+
+		if(strcmp(u, f->uid) != 0)
+		if(strcmp(u, f->gid) != 0){
+			respond(r, Enotowner);
+			return;
+		}
+	}
+
+	/*
+	 * To change group, must be owner and member of new group,
+	 * or leader of current group and leader of new group.
+	 * Second case cannot happen, but we check anyway.
+	 */
+	while(r->d.gid[0] != '\0' && strcmp(f->gid, r->d.gid) != 0){
+		if(strcmp(u, f->uid) == 0)
+			break;
+		if(strcmp(u, f->gid) == 0)
+		if(strcmp(u, r->d.gid) == 0)
+			break;
+		respond(r, Enotowner);
+		return;
+	}
+
+	if(r->d.mode != ~0){
+		f->mode = r->d.mode;
+		f->qid.type = f->mode >> 24;
+	}
+	if(r->d.name[0] != '\0'){
+		free(f->name);
+		f->name = estrdup9p(r->d.name);
+	}
+	if(r->d.length != ~0 && r->d.length != f->length)
+		truncfile(f, r->d.length);
+
+	accessfile(f, AWRITE);
+	if(r->d.mtime != ~0){
+		f->mtime = r->d.mtime;
+	}
+
+	respond(r, nil);
+	return;
+
+Perm:
+	respond(r, Enotperm);
+}
+
+void
 fsopen(Req *r)
 {
+	File *f;
+
+	f = r->fid->file;
+	if((f->mode & DMEXCL) != 0){
+		if(f->ref > 2 && (long)((ulong)time(0)-(ulong)f->atime) < 300){
+			respond(r, Elocked);
+			return;
+		}
+	}
+	if((f->mode & DMAPPEND) == 0 && (r->ifcall.mode & OTRUNC) != 0){
+		truncfile(f, 0);
+		accessfile(f, AWRITE);
+	}
 	respond(r, nil);
 }
 
@@ -357,6 +489,7 @@ Srv fs = {
 	.write 	= fswrite,
 	.create	= fscreate,
 	.stat 	= fsstat,
+	.wstat	= fswstat,
 	.end 	= fsfinish,
 	.flush 	= fsflush,
 };
