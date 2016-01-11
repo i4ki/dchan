@@ -12,6 +12,7 @@ static char Enotimpl[] 	= "dchan: not implemented";
 static char Enotperm[] 	= "dchan: operation not permitted";
 static char Ewrfail[]	= "dchan: write failed";	
 static char Eintern[] 	= "dchan: internal error";
+static char Ebadspec[]	= "dchan: bad attach specification";
 
 int debug;
 
@@ -32,8 +33,8 @@ struct Faux {
 	Reqqueue *rq;	/* queue for read requests */
 	Reqqueue *wq;	/* queue for write requests */
 
-	long atime;		/* last read time */
-	long mtime;		/* last write time */
+	long atime;	/* last read time */
+	long mtime;	/* last write time */
 };
 
 struct Summ {
@@ -45,8 +46,24 @@ enum
 {
 	Xctl 	= 1,
 	Xstat,
-	Xapp,			/* application files */
+	Xapp,		/* application files */
 };
+
+static void
+fsattach(Req *r)
+{
+	char *spec;
+
+	spec = r->ifcall.aname;
+	if(spec && spec[0]){
+		respond(r, Ebadspec);
+		return;
+	}
+
+	r->fid->qid = r->srv->tree->root->qid;
+	r->ofcall.qid = r->fid->qid;
+	respond(r, nil);
+}
 
 void
 syncread(Req *r)
@@ -55,9 +72,11 @@ syncread(Req *r)
 	Data *d;
 	ulong offset;
 
+	// BUGGY
 	char tname[20 + 20];	/* at max: descr len = 20, file name = 20 */
 	snprintf(tname, 40, "%s in file %s", "readsync", r->fid->file->name);
 
+	/* now you can do: ps -a -r | grep <filename being read> */
 	threadsetname(tname);
 
 	DBG("fsread: Count = %d\n", r->ifcall.count);
@@ -80,7 +99,6 @@ syncread(Req *r)
 	readbuf(r, d->val, d->valsz);
 
 	r->ifcall.offset = offset;
-	r->ofcall.offset = offset;
 	
 	free(d->val);
 	free(d);
@@ -233,6 +251,11 @@ fscreate(Req *r)
 		faux->wq = reqqueuecreate();
 		faux->chan = chan;
 
+		time(&faux->atime);
+		faux->mtime = faux->atime;
+
+		f->atime = faux->atime;
+		f->mtime = faux->mtime;
 		f->aux = faux;
 		r->fid->file = f;
 		r->ofcall.qid = f->qid;
@@ -328,6 +351,7 @@ void usage(void)
 }
 
 Srv fs = {
+	.attach	= fsattach,
 	.open	= fsopen,
 	.read 	= fsread,
 	.write 	= fswrite,
