@@ -76,7 +76,7 @@ The ctl file is used for channel settings. To increase the channel size write a 
 with the content below:
 
 ```bash
-$ echo '/pipeline 256
+$ echo "/pipeline 256" >> ctl
 ```
 
 The line above will allocate a channel with size 256.
@@ -87,6 +87,3 @@ channels.
 ### Concurrency patterns
 
 TODO
-
-
-
