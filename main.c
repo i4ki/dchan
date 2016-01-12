@@ -7,6 +7,7 @@
 
 #define DBG if(debug) print
 #define defperm 		0650
+#define THNAMESZ		40	/* Maz size for thread name */
 
 static char Enotimpl[] 	= "dchan: not implemented";
 static char Enotperm[] 	= "dchan: operation not permitted";
@@ -37,8 +38,8 @@ struct Faux {
 	Reqqueue *rq;	/* queue for read requests */
 	Reqqueue *wq;	/* queue for write requests */
 
-	long atime;	/* last read time */
-	long mtime;	/* last write time */
+	char rthreadname[THNAMESZ];	/* reader thread name */
+	char wthreadname[THNAMESZ]; /* writer thread name */
 };
 
 struct Summ {
@@ -57,6 +58,23 @@ enum
 {
 	MAXFSIZE	= 64 * 1024,
 };
+
+void
+truncfile(File *f, vlong l)
+{
+	/** TODO: free queue */
+	f->length = l;
+}
+
+void
+accessfile(File *f, int a)
+{
+	f->atime = time(0);
+	if(a & AWRITE){
+		f->mtime = f->atime;
+		f->qid.vers++;
+	}
+}
 
 static void
 fsattach(Req *r)
@@ -81,17 +99,18 @@ syncread(Req *r)
 	Data *d;
 	ulong offset;
 
-	// BUGGY
-	char tname[20 + 20];	/* at max: descr len = 20, file name = 20 */
-	snprintf(tname, 40, "%s in file %s", "readsync", r->fid->file->name);
-
-	/* now you can do: ps -a -r | grep <filename being read> */
-	threadsetname(tname);
-
 	DBG("fsread: Count = %d\n", r->ifcall.count);
 	DBG("fsread: Offset = %d\n", (int)r->ifcall.offset);
 
 	faux = r->fid->file->aux;
+
+	if(faux == nil)
+		sysfatal("syncread: faux is nil.");
+
+	if(faux->rthreadname[0] == 0){
+		snprintf(faux->rthreadname, THNAMESZ, "dchan: %s in file %s", "syncread", r->fid->file->name);
+		threadsetname(faux->rthreadname);
+	}
 
 	d = recvp(faux->chan);
 
@@ -112,8 +131,7 @@ syncread(Req *r)
 	free(d->val);
 	free(d);
 
-	/* success read */
-	time(&faux->atime);
+	accessfile(r->fid->file, AREAD);
 
 	DBG("fsread: Reporting a success read: (%s):(count: %d)(offset: %d)\n", r->ofcall.data, r->ofcall.count, (int)r->ofcall.offset);
 	respond(r, nil);
@@ -170,6 +188,14 @@ void syncwrite(Req *r)
 
 	faux = r->fid->file->aux;
 
+	if(faux == nil)
+		sysfatal("syncwrite: faux is nil.");
+
+	if(faux->wthreadname[0] == 0){
+		snprintf(faux->wthreadname, THNAMESZ, "dchan: %s in file %s", "syncwrite", r->fid->file->name);
+		threadsetname(faux->wthreadname);
+	}
+
 	d->valsz = r->ifcall.count;
 
 	d->val = mallocz(sizeof(char) * (d->valsz + 1), 1);
@@ -199,7 +225,7 @@ void syncwrite(Req *r)
 	}
 
 	/* success write */
-	time(&faux->mtime);
+	accessfile(r->fid->file, AWRITE);
 
 	DBG("Send: %d\n", err);
 	DBG("fswrite: Reporting success write");
@@ -260,11 +286,8 @@ fscreate(Req *r)
 		faux->wq = reqqueuecreate();
 		faux->chan = chan;
 
-		time(&faux->atime);
-		faux->mtime = faux->atime;
+		 /* accessfile(f, AWRITE); */
 
-		f->atime = faux->atime;
-		f->mtime = faux->mtime;
 		f->aux = faux;
 		r->fid->file = f;
 		r->ofcall.qid = f->qid;
@@ -279,8 +302,11 @@ void
 fsstat(Req *r)
 {
 	Faux *aux;
+	File *f;
 
 	DBG("Stating file: %s\n", r->fid->file->name);
+
+	f = r->fid->file;
 
 	if(aux = r->fid->file->aux)
 	switch(aux->ftype) {
@@ -299,29 +325,12 @@ fsstat(Req *r)
 	case Xapp:
 		r->d.mode = 655;
 		r->d.length = 0;
-		r->d.atime = aux->atime;
-		r->d.mtime = aux->mtime;
+		r->d.atime = f->atime;
+		r->d.mtime = f->mtime;
 		break;
 	}
 
 	respond(r, nil);
-}
-
-void
-truncfile(File *f, vlong l)
-{
-	/** TODO: free queue */
-	f->length = l;
-}
-
-void
-accessfile(File *f, int a)
-{
-	f->atime = time(0);
-	if(a & AWRITE){
-		f->mtime = f->atime;
-		f->qid.vers++;
-	}
 }
 
 void
