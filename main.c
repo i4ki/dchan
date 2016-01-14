@@ -145,9 +145,6 @@ syncread(Req *r)
 	ulong offset;
 	int onctl;
 
-	DBG("fsread: Count = %d\n", r->ifcall.count);
-	DBG("fsread: Offset = %d\n", (int)r->ifcall.offset);
-
 	faux = r->fid->file->aux;
 
 	if(faux == nil)
@@ -210,9 +207,6 @@ readctl(Req *r)
 	if(!buffer)
 		sysfatal("Failed to allocate memory");
 
-	DBG("Filecnt: %d\n", filecnt);
-	DBG("Buffer size: %d\n", sizeof(char)*filecnt*1024);
-
 	for(i = 0; i < filecnt; i++) {
 		aux = files[i];
 
@@ -242,7 +236,8 @@ readstat(Req *r)
 	respond(r, nil);
 }
 
-void filldata(Data *d, Req *r)
+int
+filldata(Data *d, Req *r)
 {
 	d->valsz = r->ifcall.count;
 	d->val = mallocz(sizeof(char) * (d->valsz + 1), 1);
@@ -462,13 +457,9 @@ fscreate(Req *r)
 		return;
 	}
 
-	DBG("Create mode: %o\n", r->ifcall.perm);
-
 	f = createfile(r->fid->file, r->ifcall.name, r->fid->uid, defperm|r->ifcall.perm, nil);
 
 	if(f) {
-		DBG("File created\n");
-
 		faux = mallocz(sizeof *faux, 1);
 
 		if(faux == nil)
@@ -504,8 +495,6 @@ fsstat(Req *r)
 {
 	Faux *aux;
 	File *f;
-
-	DBG("Stating file: %s\n", r->fid->file->name);
 
 	f = r->fid->file;
 
@@ -578,10 +567,6 @@ fswstat(Req *r)
 	 * Because of lack of users file, leader=>group itself.
 	 */
 	if(r->d.mode != ~0 && f->mode != r->d.mode){
-		DBG("user = %s\n", u);
-		DBG("file user = %s\n", f->uid);
-		DBG("file group = %s\n", f->gid);
-
 		if(strcmp(u, f->uid) != 0)
 		if(strcmp(u, f->gid) != 0){
 			respond(r, Enotowner);
