@@ -7,7 +7,53 @@
 
 #define DBG if(debug) print
 #define defperm 		0650
+#define CHANSZ			0	/* by default the channel is unbuffered */
 #define THNAMESZ		40	/* Maz size for thread name */
+#define MAXFILES		256
+#define MAXFSIZE		64 * 1024
+#define RSTOP			1
+#define WSTOP			2
+
+enum
+{
+	Xctl 	= 1,
+	Xstat,
+	Xapp,		/* application files */
+};
+
+typedef struct Data Data;	/* user data */
+typedef struct Faux Faux;	/* file aux	 */
+typedef struct Ctl Ctl;		/* ctl data */
+
+struct Data {
+	char *val;
+	int valsz;
+};
+
+struct Faux {
+	ushort ftype;
+	Channel *chan;
+	uint chansize;
+	Reqqueue *rq;	/* queue for read requests */
+	Reqqueue *wq;	/* queue for write requests */
+	File *file;
+
+	char rthreadname[THNAMESZ];	/* reader thread name */
+	char wthreadname[THNAMESZ]; /* writer thread name */	
+};
+
+struct Ctl {
+	Channel *rwok;
+	Channel *done;
+	int onctl;
+
+	QLock l;
+};
+
+struct Summ {
+	ulong tx;
+	ulong rx;
+};
 
 static char Enotimpl[] 	= "dchan: not implemented";
 static char Enotperm[] 	= "dchan: operation not permitted";
@@ -18,46 +64,14 @@ static char Eexist[] 	= "file already exists";
 static char Enotowner[] = "not owner";
 static char Ebadoff[] 	= "bad file offset or count";
 static char Elocked[] 	= "file locked";
+static char Emaxfiles[]	= "Maximum number of files reached: 256";
+static char Ectlfmt[]	= "Invalid ctl config format.";
+static char Enotfound[]	= "ctl write failed. Target file not found.";
 
+static Faux *files[MAXFILES];
+static Ctl ctl;
+static ushort filecnt;
 int debug;
-
-long ctlatime, ctlmtime, statatime, statmtime;
-
-typedef struct Data Data;	/* user data */
-typedef struct Faux Faux;	/* file aux	 */
-typedef struct Summ Summ;	/* summary / stats */
-
-struct Data {
-	char *val;
-	int valsz;
-};
-
-struct Faux {
-	ushort ftype;
-	Channel *chan;
-	Reqqueue *rq;	/* queue for read requests */
-	Reqqueue *wq;	/* queue for write requests */
-
-	char rthreadname[THNAMESZ];	/* reader thread name */
-	char wthreadname[THNAMESZ]; /* writer thread name */
-};
-
-struct Summ {
-	ulong tx;
-	ulong rx;
-};
-
-enum
-{
-	Xctl 	= 1,
-	Xstat,
-	Xapp,		/* application files */
-};
-
-enum
-{
-	MAXFSIZE	= 64 * 1024,
-};
 
 void
 truncfile(File *f, vlong l)
@@ -74,6 +88,19 @@ accessfile(File *f, int a)
 		f->mtime = f->atime;
 		f->qid.vers++;
 	}
+}
+
+int
+waitforctl(int src)
+{
+	DBG("Sending message of stopping. %d\n", src);
+	int err = sendul(ctl.rwok, src);
+
+	if(err != 1)
+		return 0;
+	
+	recvul(ctl.done);	/* block the caller until config is updated */
+	return 1;
 }
 
 static void
@@ -98,6 +125,7 @@ syncread(Req *r)
 	Faux *faux;
 	Data *d;
 	ulong offset;
+	int onctl;
 
 	DBG("fsread: Count = %d\n", r->ifcall.count);
 	DBG("fsread: Offset = %d\n", (int)r->ifcall.offset);
@@ -112,10 +140,24 @@ syncread(Req *r)
 		threadsetname(faux->rthreadname);
 	}
 
+Recv:
 	d = recvp(faux->chan);
 
 	if(d == nil) {
-		/* recv failed, client interrupted or disconnected */
+		/* recv failed, client interrupted, disconnected or ctl is being updated*/
+
+		qlock(&ctl.l);
+		onctl = ctl.onctl;
+		qunlock(&ctl.l);
+
+		if(onctl){
+			if(!waitforctl(RSTOP))
+				goto RecvFail;
+
+			goto Recv;
+		}
+
+RecvFail:
 		/* no respond here */
 		return;
 	}
@@ -140,8 +182,40 @@ syncread(Req *r)
 void 
 readctl(Req *r)
 {
-	/* empty file for now */
-	readstr(r, "");
+	int i, total = 0;
+	Faux *aux;
+	char line[1024];
+	char *buffer;
+
+	if(filecnt == 0)
+		goto End;
+
+	buffer = mallocz(sizeof(char)*filecnt*1024, 1);
+
+	if(!buffer)
+		sysfatal("Failed to allocate memory");
+
+	DBG("Filecnt: %d\n", filecnt);
+	DBG("Buffer size: %d\n", sizeof(char)*filecnt*1024);
+
+	for(i = 0; i < filecnt; i++) {
+		aux = files[i];
+
+		assert(aux != nil);
+
+		total += snprintf(line, 1024, "/%s\t%d\n", aux->file->name, aux->chansize);
+
+		DBG("Line: %s\n", line);
+		buffer = strcat(buffer, line);
+	}
+
+	assert(total <= sizeof(char)*filecnt*1024);
+
+	readstr(r, buffer);
+
+	free(buffer);
+
+End:
 	respond(r, nil);
 }
 
@@ -153,33 +227,14 @@ readstat(Req *r)
 	respond(r, nil);
 }
 
-void
-fsread(Req *r)
-{
-	Faux *faux =  r->fid->file->aux;
-
-	if(faux == nil)
-		sysfatal("aux is nil");
-
-	switch(faux->ftype) {
-	case Xctl:
-		readctl(r);
-		return;
-	case Xstat:
-		readstat(r);
-		return;
-	}
-
-	reqqueuepush(faux->rq, r, syncread);
-}
-
 void syncwrite(Req *r)
 {
 	Faux *faux;
 	Data *d;
+	int err, onctl;
 
 	DBG("fswrite: Count = %d\n", r->ifcall.count);
-	DBG("fswrite: Offsetan = %d\n", (int)r->ifcall.offset);
+	DBG("fswrite: Offset = %d\n", (int)r->ifcall.offset);
 
 	d = mallocz(sizeof *d, 1);
 
@@ -197,7 +252,6 @@ void syncwrite(Req *r)
 	}
 
 	d->valsz = r->ifcall.count;
-
 	d->val = mallocz(sizeof(char) * (d->valsz + 1), 1);
 
 	if(!d->val)
@@ -208,14 +262,31 @@ void syncwrite(Req *r)
 
 	r->ofcall.count = d->valsz;	/* 	store valsz now because after sendp return the value 
 									will be freed by syncread */	
-	
-	int err = sendp(faux->chan, d);
 
-	/* now d is an invalid pointer, freed in another coroutine */
+Send:
+	err = sendp(faux->chan, d);
+
+	/* now d is an invalid pointer, free'd in another coroutine */
 
 	if(err != 1) {
-		DBG("Sendp failed, probably cancelled/interrupted by client\n");
+		DBG("Sendp failed: %d\n", err);
 
+		if(err == -1){
+			qlock(&ctl.l);
+			onctl = ctl.onctl;
+			qunlock(&ctl.l);
+
+			if(onctl){
+				DBG("ONCTL: waiting for ctl complete the task\n");
+				if(!waitforctl(WSTOP))
+					goto SendFail;
+					
+				goto Send;
+			}
+		}
+
+SendFail:
+		DBG("Sendp really failed.\n");
 		/* data does not arrived in the other side, we need to release memory here */
 		free(d->val);
 		free(d);
@@ -239,28 +310,132 @@ Enomem:
 void
 writectl(Req *r)
 {
-	respond(r, Enotimpl);
+	Faux *taux = nil, *tmp;
+	char line[1024];
+	char *buf;
+	int chansize, i;
+	Channel *chan;
+	int op, err;
+
+	memset(line, 0, 1024);
+
+	if(r->ifcall.count >= 1024){
+		respond(r, Ectlfmt);
+		return;
+	}
+
+	memcpy(line, r->ifcall.data, r->ifcall.count);
+
+	buf = strchr(line, ' ');
+
+	if(buf == nil){
+		respond(r, Ectlfmt);
+		return;
+	}
+
+	buf[0] = '\0';
+	buf++;
+
+	DBG("Chansize: %s\n", buf);
+
+	chansize = atoi(buf);
+
+	DBG("Size got: %d\n", chansize);
+
+	for(i = 0; i < filecnt; i++){
+		tmp = files[i];
+
+		if(strcmp(tmp->file->name, line) == 0){
+			taux = tmp;
+			break;
+		}
+	}
+
+	if(taux == nil){
+		respond(r, Enotfound);
+		return;
+	}
+
+	qlock(&ctl.l);
+	ctl.onctl = 1;
+	qunlock(&ctl.l);
+
+	chan = chancreate(sizeof(void *), chansize);
+
+	if(!chan)
+		sysfatal("failed to allocate channel");
+
+	/* close the channel of data of target file */
+	chanclose(taux->chan);
+
+	for(i = 0; i < 2; i++){
+		err = recv(ctl.rwok, &op);
+
+		if(err == -1){
+			respond(r, Eintern);
+			return;
+		}
+
+		if(op == WSTOP)
+			DBG("Thread writer stopped.\n");
+		else if(op == RSTOP)
+			DBG("Thread reader stopped.\n");
+	}
+
+	DBG("Closing target channel.\n");
+	
+	chanfree(taux->chan);
+	taux->chan = chan;
+	taux->chansize = chansize;
+
+	qlock(&ctl.l);
+	ctl.onctl = 0;
+	qunlock(&ctl.l);
+
+	/* notify the reader and writer threads */
+	if(	sendul(ctl.done, 1) == -1 ||
+		sendul(ctl.done, 1) == -1)
+		respond(r, Eintern);
+	else
+		respond(r, nil);
+}
+
+void
+fsread(Req *r)
+{
+	Faux *faux =  r->fid->file->aux;
+	void *callb = syncread;
+
+	if(faux == nil)
+		sysfatal("aux is nil");
+
+	if(faux->ftype == Xctl)
+		callb = readctl;
+
+	if(faux->ftype == Xstat)
+		callb = readstat;
+
+	reqqueuepush(faux->rq, r, callb);
 }
 
 void
 fswrite(Req *r)
 {
 	Faux *faux =  r->fid->file->aux;
+	void *callb = syncwrite;
 
 	if(faux == nil)
 		sysfatal("aux is nil");
 
-	switch(faux->ftype) {
-	case Xctl:
-		writectl(r);
-		return;
-	case Xstat:
-		/* stat file isnt writable */
+	if(faux->ftype == Xstat){
 		respond(r, Enotperm);
 		return;
 	}
 
-	reqqueuepush(faux->wq, r, syncwrite);
+	if(faux->ftype == Xctl)
+		callb = writectl;
+
+	reqqueuepush(faux->wq, r, callb);
 }
 
 void
@@ -270,25 +445,39 @@ fscreate(Req *r)
 	Faux *faux;
 	Channel *chan;
 
+	if(filecnt >= MAXFILES){
+		respond(r, Emaxfiles);
+		return;
+	}
+
 	DBG("Create mode: %o\n", r->ifcall.perm);
 
-	if(f = createfile(r->fid->file, r->ifcall.name, r->fid->uid, defperm|r->ifcall.perm, nil)) {
+	f = createfile(r->fid->file, r->ifcall.name, r->fid->uid, defperm|r->ifcall.perm, nil);
+
+	if(f) {
 		DBG("File created\n");
 
-		chan = chancreate(sizeof(void *), 0);
 		faux = mallocz(sizeof *faux, 1);
 
 		if(faux == nil)
 			sysfatal("Failed to allocate memory for faux");
+
+		chan = chancreate(sizeof(void *), 0);
+
+		if(!chan)
+			sysfatal("Failed to allocate channel");
 	
 		faux->ftype = Xapp;
 		faux->rq = reqqueuecreate();
 		faux->wq = reqqueuecreate();
+		faux->file = f;
 		faux->chan = chan;
+		faux->chansize = 0;
 
 		 /* accessfile(f, AWRITE); */
 
 		f->aux = faux;
+		files[filecnt++] = faux;
 		r->fid->file = f;
 		r->ofcall.qid = f->qid;
 		respond(r, nil);
@@ -312,15 +501,15 @@ fsstat(Req *r)
 	switch(aux->ftype) {
 	case Xctl:
 		r->d.mode = 0655;
-		r->d.length = 4 * 1024;
-		r->d.atime = ctlatime;	/* last read equals to now() */
-		r->d.mtime = ctlmtime;
+		r->d.length = filecnt * 1024;
+		r->d.atime = f->atime;	/* last read equals to now() */
+		r->d.mtime = f->mtime;
 		break;
 	case Xstat:
 		r->d.mode = 0444;
 		r->d.length = 4 * 1024;
-		r->d.atime = statatime;
-		r->d.mtime = statmtime;
+		r->d.atime = f->atime;
+		r->d.mtime = f->mtime;
 		break;
 	case Xapp:
 		r->d.mode = 655;
@@ -458,6 +647,7 @@ fsflush(Req *r)
 
 	if(o = r->oldreq)
 	if(faux = o->fid->file->aux) {
+		
 		reqqueueflush(faux->rq, o);
 		reqqueueflush(faux->wq, o);
 	}
@@ -485,6 +675,58 @@ fsdestroyfile(File *f)
 	closefile(f);
 }
 
+void
+createctl(Srv *fs)
+{
+	File *f;
+	Faux *aux;
+
+	f = createfile(fs->tree->root, "ctl", getuser(), 0655, nil);
+
+	if(!f)
+		sysfatal("Failed to create ctl file.");
+
+	aux = mallocz(sizeof *aux, 1);
+	
+	if(!aux)
+		sysfatal("Failed to allocate Faux");
+
+	memset(&ctl, 0, sizeof ctl);
+
+	aux->ftype = Xctl;
+	aux->rq = reqqueuecreate();
+	aux->wq = reqqueuecreate();
+	ctl.done = chancreate(sizeof(int), 2);
+	ctl.rwok = chancreate(sizeof(int), 2);
+
+	f->aux = aux;
+	aux->file = f;
+}
+
+void
+createstats(Srv *fs)
+{
+	File *f;
+	Faux *aux;
+
+	f = createfile(fs->tree->root, "stats", getuser(), 0444, nil);
+
+	if(!f)
+		sysfatal("Failed to create stats file.");
+
+	aux = mallocz(sizeof *aux, 1);
+
+	if(!aux)
+		sysfatal("Failed to allocate faux");
+
+	aux->ftype = Xstat;
+	aux->rq = reqqueuecreate();
+	/* stats does not handle writes */
+
+	f->aux = aux;
+	aux->file = f;
+}
+
 void usage(void)
 {
 	fprint(2, "Usage: dchan [-D] [-d] [-s srvname] [-m mptp]\n");
@@ -509,29 +751,14 @@ threadmain(int argc, char *argv[])
 	char *addr = nil;
 	char *srvname = nil;
 	char *mptp = nil;
-	Faux ctaux, staux;
-	File *cf, *sf;
-
-	ctaux.ftype = Xctl;
-	staux.ftype = Xstat;
 
 	Qid q;
 
 	fs.tree = alloctree(nil, nil, DMDIR|0777, fsdestroyfile);
 	q = fs.tree->root->qid;
 
-	time(&ctlatime);
-	ctlmtime = ctlatime;
-	statatime = ctlatime;
-	statmtime = ctlatime;
-
-	cf = createfile(fs.tree->root, "ctl", getuser(), 0655, &ctaux);
-	sf = createfile(fs.tree->root, "stats", getuser(), 0444, &staux);
-
-	cf->atime = ctlatime;
-	cf->mtime = ctlmtime;
-	sf->atime = statatime;
-	sf->mtime = statmtime;
+	createctl(&fs);
+	createstats(&fs);
 
 	ARGBEGIN {
 	case 'd':

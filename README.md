@@ -20,6 +20,13 @@ The benefits of this approach are:
 	- No need of mocking libraries or real AMQP server.
 * Possible to use cat, echo, grep, etc, to debug the communications;
 
+THe drawbacks are:
+
+* Network failures turns the mount point into a failed state in Unix.
+	- not possible to use mount -o remount. 
+	- Requires umount and then a new mount invocation.
+	- Every file descriptor open will be invalid, requiring a new open(2).
+
 To create a channel is simple as creating a new file in the dchan directory.
 For example, in Linux you can connect to the file server and start a simple
 consumer with the commands below:
@@ -84,6 +91,6 @@ The line above will allocate a channel with size 256.
 The stats file can be read by anyone (but not written) to get statistics about the
 channels.
 
-### Concurrency patterns
+### Use cases
 
-TODO
+#### 
