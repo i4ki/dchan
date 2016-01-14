@@ -318,10 +318,27 @@ Enomem:
 	respond(r, Eintern);
 }
 
+Faux *
+getfileaux(char *name)
+{
+	int i;
+	Faux *tmp;
+
+	for(i = 0; i < filecnt; i++){
+		tmp = files[i];
+
+		if(strcmp(tmp->file->name, name) == 0){
+			return tmp;
+		}
+	}
+
+	return nil;
+}
+
 void
 writectl(Req *r)
 {
-	Faux *taux = nil, *tmp;
+	Faux *taux;
 	char line[1024];
 	char *buf;
 	int chansize, i;
@@ -349,14 +366,7 @@ writectl(Req *r)
 
 	chansize = atoi(buf);	/* returns 0 if buf is not a number */
 
-	for(i = 0; i < filecnt; i++){
-		tmp = files[i];
-
-		if(strcmp(tmp->file->name, line) == 0){
-			taux = tmp;
-			break;
-		}
-	}
+	taux = getfileaux(line);
 
 	if(taux == nil){
 		respond(r, Enotfound);
@@ -372,7 +382,7 @@ writectl(Req *r)
 	if(!chan)
 		sysfatal("failed to allocate channel");
 
-	/* close the channel of data of target file */
+	/* close the channel of target file */
 	chanclose(taux->chan);
 
 	for(i = 0; i < 2; i++){
@@ -389,7 +399,7 @@ writectl(Req *r)
 			DBG("Thread reader stopped.\n");
 	}
 
-	DBG("Closing target channel.\n");
+	/* we're ready to update channel */
 	
 	chanfree(taux->chan);
 	taux->chan = chan;
