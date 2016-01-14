@@ -70,7 +70,7 @@ handle the subsequent requests and every created file in the tree will spawn 2 o
 threads (one for read and one for write requests) and create a channel shared between 
 this two threads.
 
-The size of the channel is 1 by default and it can be changed using the ctl file.
+The size of the channel is 0 (unbuffered) by default and it can be changed using the ctl file.
 
 Every read request will block when the channel is empty. And every write request
 will block the writer thread when the channel is full.
@@ -83,7 +83,7 @@ The ctl file is used for channel settings. To increase the channel size write a 
 with the content below:
 
 ```bash
-$ echo "/pipeline 256" >> ctl
+$ echo "pipeline 256" >> ctl
 ```
 
 The line above will allocate a channel with size 256.
