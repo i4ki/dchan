@@ -293,7 +293,7 @@ Send:
 				DBG("ONCTL: waiting for ctl complete the task\n");
 				if(!waitforctl(WSTOP))
 					goto SendFail;
-					
+
 				goto Send;
 			}
 		}
@@ -654,9 +654,10 @@ fsflush(Req *r)
 
 	if(o = r->oldreq)
 	if(faux = o->fid->file->aux) {
-		
-		reqqueueflush(faux->rq, o);
-		reqqueueflush(faux->wq, o);
+		if(o->ifcall.type == Tread)
+			reqqueueflush(faux->rq, o);
+		else if(o->ifcall.type == Twrite)
+			reqqueueflush(faux->wq, o);
 	}
 
 	respond(r, nil);
