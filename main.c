@@ -39,12 +39,12 @@ struct Faux {
 	File *file;
 
 	char rthreadname[THNAMESZ];	/* reader thread name */
-	char wthreadname[THNAMESZ]; /* writer thread name */	
+	char wthreadname[THNAMESZ];	/* writer thread name */	
 };
 
 struct Ctl {
-	Channel *rwok;
-	Channel *done;
+	Channel *rwok;	/* reader/writer threads notify channel */
+	Channel *done;	/* ctl notify successfull updates here */
 	int onctl;
 
 	QLock l;
@@ -60,13 +60,13 @@ static char Enotperm[] 	= "dchan: operation not permitted";
 static char Ewrfail[]	= "dchan: write failed";	
 static char Eintern[] 	= "dchan: internal error";
 static char Ebadspec[]	= "dchan: bad attach specification";
-static char Eexist[] 	= "file already exists";
-static char Enotowner[] = "not owner";
-static char Ebadoff[] 	= "bad file offset or count";
-static char Elocked[] 	= "file locked";
-static char Emaxfiles[]	= "Maximum number of files reached: 256";
-static char Ectlfmt[]	= "Invalid ctl config format.";
-static char Enotfound[]	= "ctl write failed. Target file not found.";
+static char Eexist[] 	= "dchan: file already exists";
+static char Enotowner[] = "dchan: not owner";
+static char Ebadoff[] 	= "dchan: bad file offset or count";
+static char Elocked[] 	= "dchan: file locked";
+static char Emaxfiles[]	= "dchan: Maximum number of files reached: 256";
+static char Ectlfmt[]	= "dchan: Invalid ctl config format.";
+static char Enotfound[]	= "dchan: ctl write failed. Target file not found.";
 
 static Faux *files[MAXFILES];
 static Ctl ctl;
