@@ -75,7 +75,7 @@ The size of the channel is 0 (unbuffered) by default and it can be changed using
 Every read request will block when the channel is empty. And every write request
 will block the writer thread when the channel is full.
 
-When the channel is unbuffered (or with size equals 1), the file server do not store
+When the channel is unbuffered (or with size equals 0), the file server do not store
 the messages, only transfer the written data from the writer thread to the reader, 
 that will then deliver the data to the consumer.
 
@@ -91,6 +91,7 @@ The line above will allocate a channel with size 256.
 The stats file can be read by anyone (but not written) to get statistics about the
 channels.
 
-### Use cases
+### Contributing
 
-#### 
+Please read: [Notes on Programming in C - Rob Pike](http://doc.cat-v.org/bell_labs/pikestyle)
+
