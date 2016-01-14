@@ -120,6 +120,24 @@ fsattach(Req *r)
 }
 
 void
+readersetname(Faux *aux, char *fn, char *name)
+{
+	if(aux->rthreadname[0] == 0){
+		snprintf(aux->rthreadname, THNAMESZ, "dchan: %s in file %s", fn, name);
+		threadsetname(aux->rthreadname);
+	}
+}
+
+void
+writersetname(Faux *aux, char *fn, char *name)
+{
+	if(aux->wthreadname[0] == 0){
+		snprintf(aux->wthreadname, THNAMESZ, "dchan: %s in file %s", fn, name);
+		threadsetname(aux->wthreadname);
+	}
+}
+
+void
 syncread(Req *r)
 {
 	Faux *faux;
@@ -135,10 +153,7 @@ syncread(Req *r)
 	if(faux == nil)
 		sysfatal("syncread: faux is nil.");
 
-	if(faux->rthreadname[0] == 0){
-		snprintf(faux->rthreadname, THNAMESZ, "dchan: %s in file %s", "syncread", r->fid->file->name);
-		threadsetname(faux->rthreadname);
-	}
+	readersetname(faux, "syncread", r->fid->file->name);
 
 Recv:
 	d = recvp(faux->chan);
@@ -227,14 +242,25 @@ readstat(Req *r)
 	respond(r, nil);
 }
 
+void filldata(Data *d, Req *r)
+{
+	d->valsz = r->ifcall.count;
+	d->val = mallocz(sizeof(char) * (d->valsz + 1), 1);
+
+	if(!d->val)
+		return -1;
+
+	d->val = memcpy(d->val, r->ifcall.data, d->valsz);
+	d->val[d->valsz] = 0;
+
+	return 0;
+}
+
 void syncwrite(Req *r)
 {
 	Faux *faux;
 	Data *d;
 	int err, onctl;
-
-	DBG("fswrite: Count = %d\n", r->ifcall.count);
-	DBG("fswrite: Offset = %d\n", (int)r->ifcall.offset);
 
 	d = mallocz(sizeof *d, 1);
 
@@ -246,19 +272,11 @@ void syncwrite(Req *r)
 	if(faux == nil)
 		sysfatal("syncwrite: faux is nil.");
 
-	if(faux->wthreadname[0] == 0){
-		snprintf(faux->wthreadname, THNAMESZ, "dchan: %s in file %s", "syncwrite", r->fid->file->name);
-		threadsetname(faux->wthreadname);
-	}
+	writersetname(faux, "syncwrite", r->fid->file->name);
 
-	d->valsz = r->ifcall.count;
-	d->val = mallocz(sizeof(char) * (d->valsz + 1), 1);
-
-	if(!d->val)
+	/* copy request into data */
+	if(filldata(d, r) == -1)
 		goto Enomem;
-
-	d->val = memcpy(d->val, r->ifcall.data, d->valsz);
-	d->val[d->valsz] = 0;
 
 	r->ofcall.count = d->valsz;	/* 	store valsz now because after sendp return the value 
 									will be freed by syncread */	
@@ -298,8 +316,6 @@ SendFail:
 	/* success write */
 	accessfile(r->fid->file, AWRITE);
 
-	DBG("Send: %d\n", err);
-	DBG("fswrite: Reporting success write");
 	respond(r, nil);
 	return;
 
@@ -336,11 +352,7 @@ writectl(Req *r)
 	buf[0] = '\0';
 	buf++;
 
-	DBG("Chansize: %s\n", buf);
-
-	chansize = atoi(buf);
-
-	DBG("Size got: %d\n", chansize);
+	chansize = atoi(buf);	/* returns 0 if buf is not a number */
 
 	for(i = 0; i < filecnt; i++){
 		tmp = files[i];
