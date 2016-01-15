@@ -18,7 +18,7 @@ enum
 {
 	Xctl 	= 1,
 	Xstat,
-	Xapp,		/* application files */
+	Xapp,					/* application files */
 };
 
 typedef struct Data Data;	/* user data */
@@ -42,17 +42,13 @@ struct Faux {
 	char wthreadname[THNAMESZ];	/* writer thread name */	
 };
 
+/* data type used to synchronize access to file channels */
 struct Ctl {
 	Channel *rwok;	/* reader/writer threads notify channel */
 	Channel *done;	/* ctl notify successfull updates here */
 	int onctl;
 
 	QLock l;
-};
-
-struct Summ {
-	ulong tx;
-	ulong rx;
 };
 
 static char Enotimpl[] 	= "dchan: not implemented";
@@ -483,7 +479,10 @@ fscreate(Req *r)
 		faux->ftype = Xapp;
 		faux->rq = reqqueuecreate();
 		faux->wq = reqqueuecreate();
+
+		incref(f);
 		faux->file = f;
+
 		faux->chan = chan;
 		faux->chansize = 0;
 
@@ -638,12 +637,16 @@ fsopen(Req *r)
 		truncfile(f, 0);
 		accessfile(f, AWRITE);
 	}
+
 	respond(r, nil);
 }
 
 void fsfinish(Srv *)
 {
+	DBG("Finishing server.\n");
 	
+	chanfree(ctl.done);
+	chanfree(ctl.rwok);
 }
 
 void
@@ -664,11 +667,28 @@ fsflush(Req *r)
 }
 
 void
+fsremove(Req *r)
+{
+	Faux *aux = r->fid->file->aux;
+
+	switch(aux->ftype){
+	case Xctl:
+	case Xstat:
+		respond(r, "permission denied");
+		break;
+	case Xapp:
+		closefile(aux->file);
+		respond(r, nil);
+		break;
+	default:
+		respond(r, Eintern);
+	}
+}
+
+void
 fsdestroyfile(File *f)
 {
 	Faux *faux;
-
-	DBG("Closing %s\n", f->name);
 
 	if(faux = f->aux)
 	if(faux->ftype != Xctl)
@@ -679,8 +699,6 @@ fsdestroyfile(File *f)
 
 		free(faux);
 	}
-
-	closefile(f);
 }
 
 void
@@ -709,6 +727,7 @@ createctl(Srv *fs)
 
 	f->aux = aux;
 	aux->file = f;
+	incref(f);
 }
 
 void
@@ -729,10 +748,10 @@ createstats(Srv *fs)
 
 	aux->ftype = Xstat;
 	aux->rq = reqqueuecreate();
-	/* stats does not handle writes */
 
 	f->aux = aux;
 	aux->file = f;
+	incref(f);
 }
 
 void usage(void)
@@ -742,15 +761,16 @@ void usage(void)
 }
 
 Srv fs = {
-	.attach	= fsattach,
-	.open	= fsopen,
-	.read 	= fsread,
-	.write 	= fswrite,
-	.create	= fscreate,
-	.stat 	= fsstat,
-	.wstat	= fswstat,
-	.end 	= fsfinish,
-	.flush 	= fsflush,
+	.attach		= fsattach,
+	.open		= fsopen,
+	.read 		= fsread,
+	.write 		= fswrite,
+	.create		= fscreate,
+	.stat 		= fsstat,
+	.wstat		= fswstat,
+	.end 		= fsfinish,
+	.flush 		= fsflush,
+	.remove		= fsremove,
 };
 
 void
