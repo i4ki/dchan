@@ -20,16 +20,55 @@ The benefits of this approach are:
 	- No need of mocking libraries or real AMQP server.
 * Possible to use cat, echo, grep, etc, to debug the communications;
 
-THe drawbacks are:
+The drawbacks are:
 
 * Network failures turns the mount point into a failed state in Unix.
 	- not possible to use mount -o remount. 
 	- Requires umount and then a new mount invocation.
 	- Every file descriptor open will be invalid, requiring a new open(2).
+* No data framing.
+	- Use your own app convention to avoid fragmented messages.
+	- Eg.: read(fd, MAXMSGSZ) and write(fd, msg, strlen(msg));
+
+## Building and running
+
+It's a Plan9 server.
+
+```sh
+term% hg https://bitbucket.org/tiago4orion/dchan
+term% cd dchan
+term% mk
+term% ./dchan -h
+Usage: dchan [-D] [-d] [-s srvname] [-m mptp]
+
+term% ./dchan -s dchan -a tcp!*!6666
+term%
+```
+
+The last command above will post a server called dchan into /srv, fork and start
+listening for 9P messages on port 6666.
+
+Now you can mount dchan's filesystems on Plan9 or unix machines.
+
+## Mounting the filesystem
+
+To mount in local plan9:
+
+```sh
+term% mount -c /srv/dchan /n/dchan
+```
+
+Linux:
+
+```bash
+$ mount -t 9p -o port=6666,sync,cache=none <ip-of-dchan-server> /n/dchan
+```
+
+## Message passing
 
 To create a channel is simple as creating a new file in the dchan directory.
-For example, in Linux you can connect to the file server and start a simple
-consumer with the commands below:
+For example, in Linux you can connect to the file server and create a channel
+using the `touch` command.
 
 ```bash
 $ mount -t 9p -o port=6666,sync,cache=none <ip-of-dchan> /n/dchan
@@ -83,7 +122,7 @@ The ctl file is used for channel settings. To increase the channel size write a 
 with the content below:
 
 ```bash
-$ echo "pipeline 256" >> ctl
+$ echo "/pipeline 256" >> ctl
 ```
 
 The line above will allocate a channel with size 256.
