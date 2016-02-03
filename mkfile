@@ -1,26 +1,36 @@
 </$objtype/mkfile
 
-TARG = dchan
+BIN=$home/bin
+TARG = 	dchan
 
-dchan:		main.$O fs.$O file.$O
-			$LD $LDFLAGS -o $TARG fs.$O file.$O main.$O 
+OFILES=\
+	main.$O\
+	fs.$O\
+	file.$O\
 
-main.$O:	main.c
-			$CC $CFLAGS main.c
+HFILES=\
+	dat.h\
+	fns.h\
 
-fs.$O:		fs.c
-			$CC $CFLAGS fs.c
+UPDATE=\
+	mkfile\
+	$HFILES\
+	${OFILES:%.$O=%.c}\
 
-file.$O:	file.c
-			$CC $CFLAGS file.c
+</sys/src/cmd/mkone
 
-clean:
-	rm *.$O $TARG
+install:V:	$BIN/$TARG install-dstats
 
-run:
+install-dstats:VE:
+	mkdir -p $BIN/aux
+	cp aux/dstats $BIN/aux/dstats
+
+run:V:
+	kill $O.out | rc
+	./$O.out -s $TARG -a tcp!*!6666 -d 
+
+rund:V:
 	kill $TARG | rc
-	./$TARG -s $TARG -a tcp!*!6666 -d 
+	./$O.out -s $TARG -a tcp!*!6666 -d -D
 
-rund:
-	kill $TARG | rc
-	./$TARG -s $TARG -a tcp!*!6666 -d -D
+

@@ -3,6 +3,9 @@ void truncfile(File *f, vlong l);
 void accessfile(File *f, int a);
 char *fullpath(File *f);
 
+/* timer.c */
+void timerproc(void *arg);
+
 /* fs.c */
 void fscreate(Req *r);
 void fsattach(Req *r);

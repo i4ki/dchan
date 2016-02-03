@@ -31,8 +31,15 @@ struct Faux {
 	QLock openl;	/* lock for open/clunk update */
 
 	/* statistics */
-	long nwrites;	/* number of writes */
-	long nreads;	/* number of reads */
+	QLock slock;
+	ulong nwrites;	/* number of writes in interval */
+	ulong nreads;	/* number of reads in interval */
+
+	Channel *timer;	/* interval timer for collect stats */
+	long rx;		/* receive rate (req/s) */
+	long tx;		/* transmission rate (req/s) */
+	long avgrx;		/* average receive rate */
+	long avgtx;		/* average transmission rate */
 
 	char rthreadname[THNAMESZ];	/* reader thread name */
 	char wthreadname[THNAMESZ];	/* writer thread name */	

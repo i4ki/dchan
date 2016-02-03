@@ -8,6 +8,8 @@
 #include "dat.h"
 #include "fns.h"
 
+int casl(ulong *addr, ulong ov, ulong nv);
+
 #define DEFPERM 		0650
 #define CHANSZ			0	/* by default the channel is unbuffered */
 #define MAXFILES		256
@@ -47,6 +49,27 @@ waitforctl(int src)
 	
 	recvul(ctl.done);	/* block the caller until config is updated */
 	return 1;
+}
+
+void
+filestats(void *arg)
+{
+	Faux *aux;
+	long t;
+
+	aux = arg;
+
+	for(t = 0;; t+=60) {
+		sleep(1000);
+
+		qlock(&aux->slock);
+		aux->rx = aux->nreads;
+		aux->tx = aux->nwrites;
+		qunlock(&aux->slock);
+
+		casl(&aux->nreads, aux->nreads, 0);		/* TODO: err handling */
+		casl(&aux->nwrites, aux->nwrites, 0);	/* TODO: err handling */
+	}
 }
 
 void
@@ -133,7 +156,7 @@ RecvFail:
 
 	accessfile(r->fid->file, AREAD);
 
-	ainc(&faux->nreads);
+	ainc((long *)&faux->nreads);
 
 	DBG("fsread: Reporting a success read: (%s):(count: %d)(offset: %d)\n", r->ofcall.data, r->ofcall.count, (int)r->ofcall.offset);
 	respond(r, nil);
@@ -157,7 +180,11 @@ readctl(Req *r)
 
 		memset(line, 0, sizeof line);
 
-		written = snprintf(line, 1024, "%s\t%d\t%ld\t%ld\n", aux->fullpath, aux->chansize, aux->nreads, aux->nwrites);
+		qlock(&aux->slock);	/* sync with filestats() */
+
+		written = snprintf(line, 1024, "%s\t%d\t%ld\t%ld\n", aux->fullpath, aux->chansize, aux->rx, aux->tx);
+
+		qunlock(&aux->slock);
 
 		buffer = realloc(buffer, total + written + 1);
 
@@ -266,7 +293,7 @@ SendFail:
 	/* success write */
 	accessfile(r->fid->file, AWRITE);
 
-	ainc(&faux->nwrites);
+	ainc((long *)&faux->nwrites);
 
 	respond(r, nil);
 	return;
@@ -506,6 +533,13 @@ fscreate(Req *r)
 			faux->chan = chan;
 			faux->chansize = 0;
 
+			faux->timer = chancreate(sizeof(ulong), 0);
+
+			if(!faux->timer)
+				sysfatal("Failed to allocate timer channel");
+
+			proccreate(filestats, faux, 1024);
+			
 			qlock(&filelk);
 
 			fl = emalloc9p(sizeof *fl);
