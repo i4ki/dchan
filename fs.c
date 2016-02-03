@@ -133,6 +133,8 @@ RecvFail:
 
 	accessfile(r->fid->file, AREAD);
 
+	ainc(&faux->nreads);
+
 	DBG("fsread: Reporting a success read: (%s):(count: %d)(offset: %d)\n", r->ofcall.data, r->ofcall.count, (int)r->ofcall.offset);
 	respond(r, nil);
 }
@@ -155,7 +157,7 @@ readctl(Req *r)
 
 		memset(line, 0, sizeof line);
 
-		written = snprintf(line, 1024, "%s\t%d\n", aux->fullpath, aux->chansize);
+		written = snprintf(line, 1024, "%s\t%d\t%ld\t%ld\n", aux->fullpath, aux->chansize, aux->nreads, aux->nwrites);
 
 		buffer = realloc(buffer, total + written + 1);
 
@@ -203,7 +205,8 @@ filldata(Data *d, Req *r)
 	return 0;
 }
 
-void syncwrite(Req *r)
+void
+syncwrite(Req *r)
 {
 	Faux *faux;
 	Data *d;
@@ -262,6 +265,8 @@ SendFail:
 
 	/* success write */
 	accessfile(r->fid->file, AWRITE);
+
+	ainc(&faux->nwrites);
 
 	respond(r, nil);
 	return;

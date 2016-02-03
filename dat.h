@@ -30,6 +30,10 @@ struct Faux {
 	uint open;		/* number of clients that have this file open */
 	QLock openl;	/* lock for open/clunk update */
 
+	/* statistics */
+	long nwrites;	/* number of writes */
+	long nreads;	/* number of reads */
+
 	char rthreadname[THNAMESZ];	/* reader thread name */
 	char wthreadname[THNAMESZ];	/* writer thread name */	
 };
