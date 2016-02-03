@@ -1,0 +1,52 @@
+#!/bin/rc
+
+dchandir=/n/dchanstats
+pidfile=/tmp/dstats.pid
+histwidth=500
+histheight=250
+maxval=5000
+ctlwidth=500
+ctlheight=450
+
+unmount $dchandir >/dev/null >[2=1]
+mount -c /srv/dchan $dchandir
+
+if(~ $status ''){
+	echo 'dchan mounted'
+}
+if not {
+	echo 'dchan not running'
+	exit 1
+}
+
+{
+	rfork n
+	while(){
+		sleep 1
+		cat $dchandir/ctl | awk '{print $3}'
+	}
+} | histogram -t 'RX (reads/s)' -v $maxval -r 0,0,$histwidth,$histheight &
+
+txminx=`{echo ''| awk '{print '^$histwidth^'*2}'}
+
+{
+	rfork n
+	while(){
+		sleep 1
+		cat $dchandir/ctl | awk '{print $4}'
+	}
+} | histogram -r $histwidth,0,$txminx,$histheight -t 'TX (writes/s)' -v $maxval &
+
+ctlminy=`{echo ''| awk '{print '^$histheight^'+2}'}
+
+{
+	rfork n
+	while(){
+		sleep 1
+		cat $dchandir/ctl | sed 's/[	]+/    /g'
+	}
+} | aux/statusmsg -w 0,$ctlminy,$ctlwidth,$ctlheight 'Dchan stats' &
+
+while(){
+	 sleep 10
+}
