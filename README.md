@@ -74,7 +74,7 @@ using the `touch` command.
 $ mount -t 9p -o port=6666,sync,cache=none <ip-of-dchan> /n/dchan
 $ cd /n/dchan
 $ ls
-ctl stats
+ctl
 $ touch pipeline
 ```
 
@@ -94,7 +94,7 @@ channel using a simple echo.
 $ mount -t 9p -o port=6666,sync,cache=none <ip-of-dchan> /n/dchan2
 $ cd /n/dchan2
 $ ls
-ctl stats pipeline
+ctl pipeline
 $ echo AAAAAAAAAAAAAa >> pipeline
 $ 
 ```
@@ -118,8 +118,8 @@ When the channel is unbuffered (or with size equals 0), the file server do not s
 the messages, only transfer the written data from the writer thread to the reader, 
 that will then deliver the data to the consumer.
 
-The ctl file is used for channel settings. To increase the channel size write a line
-with the content below:
+The ctl file is used for channel settings and statistics. To increase the channel 
+size write a line with the content below:
 
 ```bash
 $ echo "/pipeline 256" >> ctl
@@ -127,8 +127,13 @@ $ echo "/pipeline 256" >> ctl
 
 The line above will allocate a channel with size 256.
 
-The stats file can be read by anyone (but not written) to get statistics about the
-channels.
+You can read the ctl file to read statistics about transmission/receive rate and average throughput.
+
+```bash
+$ cat ctl
+# filename | channel size | rx | tx | average rx | average tx
+/pipeline	0	455	500	460	480
+```
 
 ### Contributing
 
