@@ -4,7 +4,6 @@
 enum
 {
 	Xctl 	= 1,
-	Xstat,
 	Xdir,
 	Xapp,					/* application files */
 };
@@ -35,7 +34,6 @@ struct Faux {
 	ulong nwrites;	/* number of writes in interval */
 	ulong nreads;	/* number of reads in interval */
 
-	Channel *timer;	/* interval timer for collect stats */
 	long rx;		/* receive rate (req/s) */
 	long tx;		/* transmission rate (req/s) */
 	long avgrx;		/* average receive rate */

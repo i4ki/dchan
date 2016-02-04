@@ -41,7 +41,6 @@ threadmain(int argc, char *argv[])
 	q = fs.tree->root->qid;
 
 	createctl(&fs);
-	createstats(&fs);
 
 	ARGBEGIN {
 	case 'd':

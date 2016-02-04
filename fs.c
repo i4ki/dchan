@@ -65,6 +65,17 @@ filestats(void *arg)
 		qlock(&aux->slock);
 		aux->rx = aux->nreads;
 		aux->tx = aux->nwrites;
+
+		if(aux->avgtx == 0)
+			aux->avgtx = aux->tx;
+		else if(aux->tx > 0)
+			aux->avgtx = (aux->avgtx + aux->tx)/2;
+
+		if(aux->avgrx == 0)
+			aux->avgrx = aux->rx;
+		else if(aux->rx > 0)
+			aux->avgrx = (aux->avgrx + aux->rx)/2;
+
 		qunlock(&aux->slock);
 
 		casl(&aux->nreads, aux->nreads, 0);		/* TODO: err handling */
@@ -182,7 +193,7 @@ readctl(Req *r)
 
 		qlock(&aux->slock);	/* sync with filestats() */
 
-		written = snprintf(line, 1024, "%s\t%d\t%ld\t%ld\n", aux->fullpath, aux->chansize, aux->rx, aux->tx);
+		written = snprintf(line, 1024, "%s\t%d\t%ld\t%ld\t%ld\t%ld\n", aux->fullpath, aux->chansize, aux->rx, aux->tx, aux->avgrx, aux->avgtx);
 
 		qunlock(&aux->slock);
 
@@ -206,14 +217,6 @@ readctl(Req *r)
 		readstr(r, "");
 	}
 
-	respond(r, nil);
-}
-
-void
-readstat(Req *r)
-{
-	/* empty file for now */
-	readstr(r, "");
 	respond(r, nil);
 }
 
@@ -459,9 +462,6 @@ fsread(Req *r)
 	if(faux->ftype == Xctl)
 		callb = readctl;
 
-	if(faux->ftype == Xstat)
-		callb = readstat;
-
 	reqqueuepush(faux->rq, r, callb);
 }
 
@@ -473,11 +473,6 @@ fswrite(Req *r)
 
 	if(faux == nil)
 		sysfatal("aux is nil");
-
-	if(faux->ftype == Xstat){
-		respond(r, Enotperm);
-		return;
-	}
 
 	if(faux->ftype == Xdir){
 		respond(r, Edir);
@@ -533,11 +528,6 @@ fscreate(Req *r)
 			faux->chan = chan;
 			faux->chansize = 0;
 
-			faux->timer = chancreate(sizeof(ulong), 0);
-
-			if(!faux->timer)
-				sysfatal("Failed to allocate timer channel");
-
 			proccreate(filestats, faux, 1024);
 			
 			qlock(&filelk);
@@ -575,12 +565,6 @@ fsstat(Req *r)
 		r->d.mode = 0655;
 		r->d.length = 1024;
 		r->d.atime = f->atime;	/* last read equals to now() */
-		r->d.mtime = f->mtime;
-		break;
-	case Xstat:
-		r->d.mode = 0444;
-		r->d.length = 4 * 1024;
-		r->d.atime = f->atime;
 		r->d.mtime = f->mtime;
 		break;
 	case Xapp:
@@ -792,9 +776,6 @@ fsremove(Req *r)
 
 	switch(aux->ftype){
 	case Xctl:
-	case Xstat:
-		respond(r, "permission denied");
-		break;
 	case Xapp:
 		closefile(f);
 		respond(r, nil);
@@ -899,30 +880,6 @@ createctl(Srv *fs)
 	aux->wq = reqqueuecreate();
 	ctl.done = chancreate(sizeof(int), 2);
 	ctl.rwok = chancreate(sizeof(int), 2);
-
-	f->aux = aux;
-	aux->file = f;
-	incref(f);
-}
-
-void
-createstats(Srv *fs)
-{
-	File *f;
-	Faux *aux;
-
-	f = createfile(fs->tree->root, "stats", getuser(), 0444, nil);
-
-	if(!f)
-		sysfatal("Failed to create stats file.");
-
-	aux = mallocz(sizeof *aux, 1);
-
-	if(!aux)
-		sysfatal("Failed to allocate faux");
-
-	aux->ftype = Xstat;
-	aux->rq = reqqueuecreate();
 
 	f->aux = aux;
 	aux->file = f;
